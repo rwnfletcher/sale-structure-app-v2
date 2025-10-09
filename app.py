@@ -1,11 +1,12 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v4.0 — Full, stable build
-# • Money inputs (Headline & Alleviator) accept commas; auto-format on commit (Enter/blur)
-# • Alleviator can be entered as % of Offer or A$ (linked both ways)
-# • Offer Price card, Handover Timing bar (0–N weeks), Monthly Cost with bold Alleviator
-# • Amortisation charts (Yearly/Monthly) + XLSX export
-# • PDF download of dashboard summary (graceful if reportlab missing)
-# • "How to Use" + "Input Reference" sections at the bottom
+# v3.9.2 — Stable, with auto-format commas on commit for money inputs
+# • Offer Price card
+# • 0–16wk Lump bar
+# • Vendor-only Monthly Cost (bold Alleviator beside it)
+# • XLSX export
+# • Yearly/Monthly amortisation toggle
+# • Tax Burden Alleviator: $ or % of Offer Price (linked)
+# • Money inputs (Headline & Alleviator) auto-format to commas when you press Enter or click away
 
 import io, math, re
 import pandas as pd
@@ -14,16 +15,6 @@ import matplotlib.pyplot as plt
 import streamlit as st
 from dataclasses import dataclass
 from typing import List, Literal
-
-# ---- optional PDF dependency
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.lib import colors
-    from reportlab.pdfgen import canvas
-    REPORTLAB_OK = True
-except Exception:
-    REPORTLAB_OK = False
 
 Structure = Literal["Amortizing", "Interest-Only + Balloon", "Equal Principal"]
 
@@ -34,7 +25,7 @@ def aud(x: float) -> str:
     return f"A${x:,.0f}"
 
 def parse_money_to_float(s: str) -> float:
-    """Parse input like '4,000,000' or '$4,000,000' into float safely."""
+    """Parse '4,000,000' or '$4,000,000' etc into float safely."""
     if s is None or str(s).strip() == "":
         return 0.0
     cleaned = re.sub(r"[^\d\.\-]", "", str(s))
@@ -46,12 +37,13 @@ def parse_money_to_float(s: str) -> float:
 def money_input(label: str, default: float, key: str) -> float:
     """
     Text input that:
-      - seeds a comma-formatted default,
-      - re-formats back to comma style on commit (Enter or blur),
+      - shows a comma-formatted default,
+      - formats back to comma style on commit (on_change),
       - returns a float for calculations.
-    Uses an internal state key "<key>__fmt" so it never collides with other widgets.
     """
     fmt_key = f"{key}__fmt"
+
+    # one-time seed
     if fmt_key not in st.session_state:
         st.session_state[fmt_key] = f"{default:,.0f}"
 
@@ -117,7 +109,7 @@ def draw_timebar(ax, seller_weeks: float, lump_max: float):
     ax.set_title("Handover Timing (weeks)")
     labels, y = ["Seller Finance", "Lump Sum"], [1, 0]
     ax.barh([y[0]], [seller_weeks], left=[0], color="#1f77b4", height=0.35)
-    ax.barh([y[1]], [lump_max],    left=[0], color="#ff7f0e", height=0.35)
+    ax.barh([y[1]], [lump_max], left=[0], color="#ff7f0e", height=0.35)
     ax.set_yticks(y, labels)
     ax.set_xlabel("Weeks")
     ax.grid(True, axis="x", alpha=0.25)
@@ -136,7 +128,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v4.0", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.9.2", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -152,15 +144,16 @@ with st.sidebar:
     show_monthly = st.checkbox("Show monthly cost panel", True)
     st.markdown("---")
 
-    # ---- Tax Burden Alleviator inputs (linked $ and %) ----
+    # ---- Tax Burden Alleviator inputs ----
     st.subheader("Tax Burden Alleviator (First Year extra principal)")
     tax_as_percent = st.checkbox("Input as % of Offer Price", value=False)
     if tax_as_percent:
         tax_alleviator_percent = st.number_input("Alleviator (% of Offer Price)", 0.0, 100.0, 0.0, step=0.5)
-        tax_alleviator_amount = 0.0  # computed after offer price is known
+        # amount computed after offer price is known
+        tax_alleviator_amount = 0.0
     else:
         tax_alleviator_amount = money_input("Alleviator Amount (A$)", 0.0, "allev_amt")
-        tax_alleviator_percent = 0.0  # computed after offer price
+        tax_alleviator_percent = 0.0  # will compute below
 
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
@@ -177,15 +170,10 @@ if tax_as_percent:
 else:
     tax_alleviator_percent = (tax_alleviator_amount / offer_price * 100) if offer_price > 0 else 0.0
 
-# Effective principal (priced as Day-1 reduction)
 effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
-
-# Build indicative yearly schedule on effective principal
 yearly_sched    = build_schedule(structure, effective_principal, rate, years)
 yearly_interest = sum(r.interest for r in yearly_sched)
 vf_gross_year   = effective_principal + yearly_interest
-
-# Equity roll modifies *cash optics* only
 roll_mult       = 1 - equity_roll_pct/100
 lump_cash       = lump_gross * roll_mult
 vf_cash_year    = vf_gross_year * roll_mult
@@ -209,7 +197,6 @@ with left:
     ax.bar([1],[yearly_interest*roll_mult],bottom=[effective_principal*roll_mult],color="#aec7e8", label="VF Interest (cash)")
     ax.set_xticks([0,1],["Lump","Vendor Finance"]); ax.set_ylabel("A$"); ax.grid(True,alpha=.2)
     ax.legend(); st.pyplot(fig)
-
 with right:
     st.markdown("#### Handover Timing (weeks)")
     fig2, ax2 = plt.subplots(figsize=(6,4))
@@ -296,103 +283,7 @@ st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
                    file_name="vendor_finance_amortisation.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# ---------- PRINT / DOWNLOAD DASHBOARD AS PDF ----------
-st.markdown("---")
-st.markdown("## 🖨️ Print / Download Dashboard as PDF")
-
-def generate_dashboard_pdf() -> io.BytesIO:
-    """Build a simple A4 PDF summary of the current dashboard state."""
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
-
-    # Header
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(25 * mm, height - 25 * mm, "Vendor Finance vs Lump Sum — Dashboard Summary")
-
-    y = height - 40 * mm
-    c.setFont("Helvetica", 11)
-    # Offer & inputs
-    c.drawString(25 * mm, y, f"Offer Price (Vendor Finance): {aud(offer_price)}"); y -= 7 * mm
-    c.drawString(25 * mm, y, f"Headline Value: {aud(headline)}"); y -= 7 * mm
-    c.drawString(25 * mm, y, f"Lump Sum Discount: {lump_disc * 100:.1f}%"); y -= 7 * mm
-    c.drawString(25 * mm, y, f"Vendor Finance Premium: {vf_prem * 100:.1f}%"); y -= 7 * mm
-    c.drawString(25 * mm, y, f"Interest Rate: {rate * 100:.2f}%  |  Term: {years} yrs")
-
-    # Alleviator
-    y -= 10 * mm
-    c.setFont("Helvetica-Bold", 12); c.drawString(25 * mm, y, "Tax Burden Alleviator")
-    c.setFont("Helvetica", 11); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Amount: {aud(tax_alleviator_amount)}  ({tax_alleviator_percent:.1f}% of Offer)"); y -= 7 * mm
-    c.drawString(25 * mm, y, f"Month Due: {tax_alleviator_month}")
-
-    # Metrics
-    y -= 10 * mm
-    c.setFont("Helvetica-Bold", 12); c.drawString(25 * mm, y, "Summary Metrics")
-    c.setFont("Helvetica", 11); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Lump Sum (Cash): {aud(lump_cash)}"); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Vendor Finance (Cash): {aud(vf_cash_year)}"); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Delta (Cash): +{aud(vf_cash_year - lump_cash)}")
-
-    # Structure details
-    y -= 10 * mm
-    c.setFont("Helvetica-Bold", 12); c.drawString(25 * mm, y, "Structure & Configuration")
-    c.setFont("Helvetica", 11); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Structure: {structure}"); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Equity Roll: {equity_roll_pct * 100:.1f}%"); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Handover (Seller Finance): {seller_weeks} wks"); y -= 6 * mm
-    c.drawString(25 * mm, y, f"Handover (Lump Sum): 0–{lump_max} wks")
-
-    # Footer
-    y -= 15 * mm
-    c.setFont("Helvetica-Oblique", 9); c.setFillColor(colors.grey)
-    c.drawString(25 * mm, y, "Generated from Streamlit Dashboard (Vendor Finance vs Lump Sum Comparison)")
-    c.save(); buf.seek(0)
-    return buf
-
-if REPORTLAB_OK:
-    pdf_buf = generate_dashboard_pdf()
-    st.download_button(
-        label="📄 Download Dashboard Summary (PDF)",
-        data=pdf_buf,
-        file_name="dashboard_summary.pdf",
-        mime="application/pdf"
-    )
-else:
-    st.info("To enable PDF download, add `reportlab` to requirements.txt and redeploy.")
-
-# ---------- How to Use ----------
-st.markdown("---")
-st.markdown("## 🧭 How to Use This Dashboard")
-st.markdown("""
-1. Enter **Headline**, discounts/premiums, rate, term, and structure in the left sidebar.  
-2. For **Tax Burden Alleviator**, either type a dollar amount (e.g., `4,000,000`) **or** toggle **% of Offer**.  
-3. Set the **Month number** when the alleviator is paid (e.g., Month 6).  
-4. Press **Enter** or click outside an input to snap values into **comma format**.  
-5. Review:
-   - **Offer Price** at the top,  
-   - **Monthly Cost** (with bold alleviator if applicable),  
-   - **Cash Proceeds** bar and **Handover Timing**,  
-   - **Amortisation** (toggle Yearly/Monthly).  
-6. Export the **amortisation schedule (XLSX)** and **Dashboard Summary (PDF)** via the buttons below the charts.  
-""")
-
-# ---------- Input Reference ----------
-st.markdown("## 📄 Input Reference")
-st.markdown("""
-**Headline value (A$)** — Purchase price before discounts/premiums.  
-**Lump Sum discount (%)** — Price reduction for an upfront cash sale.  
-**Vendor Finance premium (%)** — Price uplift offered when paid over time.  
-**Interest rate (%), Term (years)** — Loan pricing horizon.  
-**Structure** —  
-• *Amortizing* — fixed total monthly payments.  
-• *Interest-Only + Balloon* — interest-only until final month; principal due at end.  
-• *Equal Principal* — same principal each month; total payment declines.  
-**Equity roll (% of gross)** — Seller retains this equity (affects optics).  
-**Handover timings (weeks)** — Visual timeline only.  
-**Tax Burden Alleviator (A$ or %)** — Extra principal in first year;  
-• Treated as **Day-1 principal reduction** for pricing/monthlies,  
-• Shown as **cash** in the nominated month.  
-**Month number for Alleviator** — Month the alleviator is paid (default 6).  
-**Show monthly cost panel** — Toggle monthly repayment summary on/off.
-""")
+st.caption(
+    "Type with commas (e.g., 4,000,000). The field formats to commas when you press Enter or click away. "
+    "Tax Burden Alleviator can be entered as % of Offer or in A$; both remain linked."
+)

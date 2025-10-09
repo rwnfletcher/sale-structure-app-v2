@@ -1,6 +1,7 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.4: Offer Price • 0–16wk Lump bar • Vendor-only Monthly • Amortisation XLSX •
-#       CHART TOGGLE (Yearly/Monthly) • Tax Burden Alleviator (First Year extra principal)
+# v3.5: Offer Price • 0–16wk Lump bar • Vendor-only Monthly • XLSX •
+#       Chart Toggle (Yearly/Monthly) • Tax Burden Alleviator (First Year extra principal)
+#       >>> NEW: Alleviator treated as principal removed from Day 1 (pricing), paid in nominated month (cash)
 # ------------------------------------------------------------------------------------------------
 
 import io, math
@@ -27,7 +28,7 @@ class CashFlow:
     principal: float
     ending_balance: float
 
-# ---------- Core Schedules ----------
+# ---------- Core Yearly Schedules (for high-level cards) ----------
 def amortizing_schedule(principal: float, rate: float, years: int) -> List[CashFlow]:
     n, r = int(years), rate
     if n <= 0: return []
@@ -84,7 +85,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.4", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.5", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -99,7 +100,7 @@ with st.sidebar:
     lump_max        = st.number_input("Lump sum duration (weeks)", 1.0, 52.0, 16.0, 1.0)
     show_monthly    = st.checkbox("Show monthly cost panel", True)
     st.markdown("---")
-    # NEW: Tax Burden Alleviator inputs
+    # Alleviator inputs
     tax_alleviator_amount = st.number_input("Tax Burden Alleviator (First Year extra principal, A$)",
                                             min_value=0.0, value=0.0, step=50_000.0, format="%.0f")
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
@@ -111,10 +112,15 @@ lump_gross   = headline * (1 - lump_disc)
 vf_principal = headline * (1 + vf_prem)
 offer_price  = vf_principal
 
-yearly_sched    = build_schedule(structure, vf_principal, rate, years)
-yearly_interest = sum(r.interest for r in yearly_sched)
-vf_gross_year   = vf_principal + yearly_interest
+# EFFECTIVE principal for pricing/payments = principal minus alleviator (deferred but treated as removed Day 1)
+effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
 
+# For high-level “interest” card we show schedule on *effective* principal (since priced that way)
+yearly_sched    = build_schedule(structure, effective_principal, rate, years)
+yearly_interest = sum(r.interest for r in yearly_sched)
+vf_gross_year   = effective_principal + yearly_interest
+
+# Equity roll affects cash display
 roll_mult     = 1 - equity_roll_pct/100
 lump_cash     = lump_gross    * roll_mult
 vf_cash_year  = vf_gross_year * roll_mult
@@ -134,8 +140,8 @@ with left:
     st.markdown("#### Cash Proceeds — Breakdown (indicative)")
     fig, ax = plt.subplots(figsize=(6,4))
     ax.bar([0],[lump_cash],color="#ff7f0e", label="Lump Cash")
-    ax.bar([1],[vf_principal*roll_mult],color="#1f77b4", label="VF Principal (cash)")
-    ax.bar([1],[yearly_interest*roll_mult],bottom=[vf_principal*roll_mult],color="#aec7e8", label="VF Interest (cash)")
+    ax.bar([1],[effective_principal*roll_mult],color="#1f77b4", label="VF Principal (cash)")
+    ax.bar([1],[yearly_interest*roll_mult],bottom=[effective_principal*roll_mult],color="#aec7e8", label="VF Interest (cash)")
     ax.set_xticks([0,1],["Lump","Vendor Finance"]); ax.set_ylabel("A$"); ax.grid(True,alpha=.2)
     ax.legend()
     st.pyplot(fig)
@@ -145,74 +151,86 @@ with right:
     draw_timebar(ax2, seller_weeks, lump_max)
     st.pyplot(fig2)
 
-# ---------- Monthly Cost ----------
+# ---------- Monthly Cost (Vendor only) ----------
 if show_monthly:
     st.markdown("### Monthly Cost (Vendor Finance Only)")
-    vendor_pmt = vendor_monthly_payment(vf_principal, rate, years, structure)
+    vendor_pmt = vendor_monthly_payment(effective_principal, rate, years, structure)
     st.markdown(f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**")
-    st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}% — "
-               "Tax Burden Alleviator is a one-off extra principal payment in the chosen month.")
+    if tax_alleviator_amount > 0:
+        st.caption(f"Includes Day-1 pricing with principal reduced by {aud(tax_alleviator_amount)}; "
+                   f"Alleviator cash due **Month {tax_alleviator_month}**.")
+    else:
+        st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}%")
 
-# ---------- Full monthly amortisation ----------
+# ---------- Build FULL monthly amortisation (effective principal pricing) ----------
 st.markdown("---")
 st.markdown("## Vendor Finance Amortisation Schedule")
 
 months = years * 12
-r_m, bal, rows = rate / 12, vf_principal, []
+r_m    = rate / 12
+bal    = effective_principal
+rows   = []
 
-# Precompute amortizing fixed monthly payment (constant all months)
-amort_pmt = (vf_principal * r_m / (1 - (1 + r_m) ** (-months))) if (structure=="Amortizing" and r_m) else (
-            vf_principal / months if structure=="Amortizing" else None)
+# Constant amortizing payment (on effective principal); other structures use effective principal basis too
+amort_pmt = (effective_principal * r_m / (1 - (1 + r_m) ** (-months))) if (structure=="Amortizing" and r_m) else (
+            effective_principal / months if structure=="Amortizing" else None)
 
 for m in range(1, months+1):
+    allev = 0.0
     if structure == "Amortizing":
         pmt = amort_pmt or 0.0
         interest = bal * r_m
         principal = pmt - interest
-        # Fixed payments always same — just apply extra principal in the alleviator month
+        # NOTE: alleviator is a cash event only; balance is already reduced from Day 1, so DON'T change bal here
         if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            extra = min(tax_alleviator_amount, max(0.0, bal - principal))
-            principal += extra
+            allev = tax_alleviator_amount
         bal = max(0.0, bal - principal)
+
     elif structure == "Interest-Only + Balloon":
         interest = bal * r_m
         principal = 0.0
         pmt = interest
         if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            extra = min(tax_alleviator_amount, bal)
-            principal += extra; bal -= extra
+            allev = tax_alleviator_amount
+        # Balloon at final month equals the (already reduced) effective principal
         if m == months and bal > 0:
-            principal += bal; bal = 0.0; pmt += principal
+            principal += bal
+            pmt += bal
+            bal = 0.0
+
     else:  # Equal Principal
-        principal = vf_principal / months
+        principal = effective_principal / months
         interest  = bal * r_m
         pmt = principal + interest
         if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            extra = min(tax_alleviator_amount, max(0.0, bal - principal))
-            principal += extra; bal -= extra
+            allev = tax_alleviator_amount
         bal = max(0.0, bal - principal)
-    rows.append([m, pmt, interest, principal, bal])
 
-df = pd.DataFrame(rows, columns=["Month","Payment","Interest","Principal","Balance"])
+    total_cash = pmt + allev  # add alleviator as separate cash in that month
+    rows.append([m, total_cash, interest, principal, bal, allev])
+
+df = pd.DataFrame(rows, columns=["Month","Payment","Interest","Principal","Balance","Alleviator"])
 df["Year"] = np.ceil(df["Month"]/12).astype(int)
 
 # ---------- Amortisation Chart Toggle ----------
 chart_view = st.radio("Amortisation chart view:", ["Yearly", "Monthly"], horizontal=True)
 
 if chart_view == "Yearly":
-    dfy = df.groupby("Year")[["Payment","Interest","Principal"]].sum().reset_index()
+    dfy = df.groupby("Year")[["Payment","Interest","Principal","Alleviator"]].sum().reset_index()
     st.markdown("### Yearly Amortisation Chart")
     fig3, ax3 = plt.subplots(figsize=(8,4))
-    ax3.bar(dfy["Year"], dfy["Payment"],  label="Total Payment")
+    ax3.bar(dfy["Year"], dfy["Payment"],  label="Total Cash Outflow")
     ax3.bar(dfy["Year"], dfy["Interest"], label="Interest Portion")
     ax3.set_xlabel("Year"); ax3.set_ylabel("A$"); ax3.legend()
     st.pyplot(fig3)
 else:
     st.markdown("### Monthly Amortisation Chart")
     fig4, ax4 = plt.subplots(figsize=(10,4))
-    ax4.plot(df["Month"], df["Payment"],  linewidth=2, label="Payment")
+    ax4.plot(df["Month"], df["Payment"],  linewidth=2, label="Total Cash")
     ax4.plot(df["Month"], df["Interest"], linewidth=1, label="Interest")
     ax4.plot(df["Month"], df["Principal"],linewidth=1, label="Principal")
+    if tax_alleviator_amount > 0:
+        ax4.scatter([tax_alleviator_month],[df.loc[df["Month"]==tax_alleviator_month,"Payment"].values[0]], s=30)
     ax4.set_xlabel("Month"); ax4.set_ylabel("A$"); ax4.grid(True, alpha=0.25); ax4.legend()
     st.pyplot(fig4)
 
@@ -225,7 +243,5 @@ st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
                    file_name="vendor_finance_amortisation.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("“Tax Burden Alleviator (First Year extra principal)” is applied as additional principal "
-           "in the nominated month. Amortizing loans keep identical monthly payments; "
-           "Interest-Only and Equal-Principal reduce the outstanding balance earlier. "
-           "All figures are illustrative only.")
+st.caption("Alleviator is priced as principal removed from Day 1; cash is paid in the nominated month for optics. "
+           "Amortizing keeps identical monthly payments; Interest-Only balloon and Equal-Principal are built on the reduced principal.")

@@ -1,12 +1,12 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.8.1 — Stable on Streamlit Cloud
+# v3.9 — Stable
 # • Offer Price card
 # • 0–16wk Lump bar
 # • Vendor-only Monthly Cost (bold Alleviator beside it)
 # • XLSX export
 # • Yearly/Monthly amortisation toggle
-# • Tax Burden Alleviator (First Year extra principal): priced as Day-1 reduction, paid in nominated month
-# • Single text inputs for big numbers; prefilled with commas (no extra "formatted view" widgets)
+# • Tax Burden Alleviator: can input as $ or % of Offer Price (auto-linked)
+# • Comma-formatted inputs in box (Headline & Alleviator)
 
 import io, math, re
 import pandas as pd
@@ -25,9 +25,8 @@ def aud(x: float) -> str:
     return f"A${x:,.0f}"
 
 def parse_money_to_float(s: str) -> float:
-    """Parse human text with commas/currency symbols into float."""
-    if s is None or str(s).strip() == "":
-        return 0.0
+    """Parse commas or $ into float."""
+    if not s: return 0.0
     cleaned = re.sub(r"[^\d\.\-]", "", str(s))
     try:
         return float(cleaned)
@@ -35,7 +34,7 @@ def parse_money_to_float(s: str) -> float:
         return 0.0
 
 def money_input(label: str, default: float, key: str) -> float:
-    """Single text input prefilled with commas. User can type commas; we parse safely."""
+    """Single text input prefilled with commas; parses safely to float."""
     default_str = f"{default:,.0f}"
     raw = st.text_input(label, value=default_str, key=key)
     return parse_money_to_float(raw)
@@ -51,8 +50,7 @@ class CashFlow:
 # ---------- Schedule Builders ----------
 def amortizing_schedule(principal: float, rate: float, years: int) -> List[CashFlow]:
     n, r = int(years), rate
-    if n <= 0:
-        return []
+    if n <= 0: return []
     pmt = principal * r / (1 - (1 + r) ** (-n)) if r else principal / n
     bal, rows = principal, []
     for t in range(1, n + 1):
@@ -104,8 +102,7 @@ def draw_timebar(ax, seller_weeks: float, lump_max: float):
 
 def vendor_monthly_payment(principal, rate, years, structure):
     r_m, n_m = rate/12, years*12
-    if n_m <= 0:
-        return 0
+    if n_m <= 0: return 0
     if structure == "Amortizing":
         return principal * r_m / (1 - (1 + r_m) ** (-n_m)) if r_m else principal / n_m
     if structure == "Interest-Only + Balloon":
@@ -114,7 +111,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.8.1", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.9", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -129,8 +126,17 @@ with st.sidebar:
     lump_max     = st.number_input("Lump sum duration (weeks)", 1.0, 52.0, 16.0, 1.0)
     show_monthly = st.checkbox("Show monthly cost panel", True)
     st.markdown("---")
-    # IMPORTANT: Alleviator box shows commas by default for easier typing
-    tax_alleviator_amount = money_input("Tax Burden Alleviator (First Year extra principal, A$)", 0.0, "allev_amt")
+
+    # ---- Tax Burden Alleviator inputs ----
+    st.subheader("Tax Burden Alleviator (First Year extra principal)")
+    tax_as_percent = st.checkbox("Input as % of Offer Price", value=False)
+    if tax_as_percent:
+        tax_alleviator_percent = st.number_input("Alleviator (% of Offer Price)", 0.0, 100.0, 0.0, step=0.5)
+        tax_alleviator_amount = 0.0  # placeholder; will compute after offer price is known
+    else:
+        tax_alleviator_amount = money_input("Alleviator Amount (A$)", 0.0, "allev_amt")
+        tax_alleviator_percent = 0.0  # computed after offer price
+
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
                                                 value=min(6, years*12), step=1))
@@ -140,14 +146,17 @@ lump_gross   = headline * (1 - lump_disc)
 vf_principal = headline * (1 + vf_prem)
 offer_price  = vf_principal
 
-# Effective principal for pricing = Day-1 reduction by alleviator
-effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
+# Link % ↔ A$ for the alleviator
+if tax_as_percent:
+    tax_alleviator_amount = offer_price * tax_alleviator_percent / 100
+else:
+    tax_alleviator_percent = (tax_alleviator_amount / offer_price * 100) if offer_price > 0 else 0
 
-# High-level schedule on effective principal (cards/charts)
+# Effective principal (offer − alleviator)
+effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
 yearly_sched    = build_schedule(structure, effective_principal, rate, years)
 yearly_interest = sum(r.interest for r in yearly_sched)
 vf_gross_year   = effective_principal + yearly_interest
-
 roll_mult       = 1 - equity_roll_pct/100
 lump_cash       = lump_gross * roll_mult
 vf_cash_year    = vf_gross_year * roll_mult
@@ -182,7 +191,7 @@ if show_monthly:
     vendor_pmt = vendor_monthly_payment(effective_principal, rate, years, structure)
     line = f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**"
     if tax_alleviator_amount > 0:
-        line += f" | **Tax Burden Alleviator: {aud(tax_alleviator_amount)} (Month {tax_alleviator_month})**"
+        line += f" | **Tax Burden Alleviator: {aud(tax_alleviator_amount)} ({tax_alleviator_percent:.1f}% of Offer, Month {tax_alleviator_month})**"
     st.markdown(line)
     st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}%")
 
@@ -258,7 +267,7 @@ st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption(
-    "Inputs show commas directly. Alleviator is priced as Day-1 principal reduction "
-    "and shown as cash in the nominated month. Amortizing keeps identical monthly payments; "
-    "IO+Balloon and Equal-Principal are built on the reduced principal."
+    "Headline and Alleviator accept commas (e.g., 4,000,000). "
+    "Alleviator can be input as a percentage of Offer Price or fixed amount; both auto-link. "
+    "Amortizing keeps identical monthly payments; IO+Balloon and Equal-Principal are built on the reduced principal."
 )

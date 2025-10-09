@@ -1,12 +1,12 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.9 — Stable
+# v3.9.1 — Stable
 # • Offer Price card
 # • 0–16wk Lump bar
 # • Vendor-only Monthly Cost (bold Alleviator beside it)
 # • XLSX export
 # • Yearly/Monthly amortisation toggle
-# • Tax Burden Alleviator: can input as $ or % of Offer Price (auto-linked)
-# • Comma-formatted inputs in box (Headline & Alleviator)
+# • Tax Burden Alleviator: $ or % of Offer Price (linked)
+# • Commas in all money input boxes
 
 import io, math, re
 import pandas as pd
@@ -25,16 +25,17 @@ def aud(x: float) -> str:
     return f"A${x:,.0f}"
 
 def parse_money_to_float(s: str) -> float:
-    """Parse commas or $ into float."""
-    if not s: return 0.0
-    cleaned = re.sub(r"[^\d\.\-]", "", str(s))
+    """Parse input like '4,000,000' or '$4,000,000' into float safely."""
+    if s is None or str(s).strip() == "":
+        return 0.0
+    cleaned = re.sub(r"[^\d\.\-]", "", s)
     try:
         return float(cleaned)
     except ValueError:
         return 0.0
 
 def money_input(label: str, default: float, key: str) -> float:
-    """Single text input prefilled with commas; parses safely to float."""
+    """Text input that accepts commas directly in the box."""
     default_str = f"{default:,.0f}"
     raw = st.text_input(label, value=default_str, key=key)
     return parse_money_to_float(raw)
@@ -50,7 +51,8 @@ class CashFlow:
 # ---------- Schedule Builders ----------
 def amortizing_schedule(principal: float, rate: float, years: int) -> List[CashFlow]:
     n, r = int(years), rate
-    if n <= 0: return []
+    if n <= 0:
+        return []
     pmt = principal * r / (1 - (1 + r) ** (-n)) if r else principal / n
     bal, rows = principal, []
     for t in range(1, n + 1):
@@ -79,14 +81,10 @@ def equal_principal_schedule(principal: float, rate: float, years: int) -> List[
     return rows
 
 def build_schedule(structure: Structure, principal: float, rate: float, years: int):
-    if structure == "Amortizing":
-        return amortizing_schedule(principal, rate, years)
-    elif structure == "Interest-Only + Balloon":
-        return interest_only_balloon_schedule(principal, rate, years)
-    elif structure == "Equal Principal":
-        return equal_principal_schedule(principal, rate, years)
-    else:
-        raise ValueError("Unknown structure")
+    if structure == "Amortizing": return amortizing_schedule(principal, rate, years)
+    if structure == "Interest-Only + Balloon": return interest_only_balloon_schedule(principal, rate, years)
+    if structure == "Equal Principal": return equal_principal_schedule(principal, rate, years)
+    raise ValueError("Unknown structure")
 
 # ---------- Graphics ----------
 def draw_timebar(ax, seller_weeks: float, lump_max: float):
@@ -111,7 +109,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.9", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.9.1", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -132,10 +130,10 @@ with st.sidebar:
     tax_as_percent = st.checkbox("Input as % of Offer Price", value=False)
     if tax_as_percent:
         tax_alleviator_percent = st.number_input("Alleviator (% of Offer Price)", 0.0, 100.0, 0.0, step=0.5)
-        tax_alleviator_amount = 0.0  # placeholder; will compute after offer price is known
+        tax_alleviator_amount = 0.0
     else:
         tax_alleviator_amount = money_input("Alleviator Amount (A$)", 0.0, "allev_amt")
-        tax_alleviator_percent = 0.0  # computed after offer price
+        tax_alleviator_percent = 0.0
 
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
@@ -146,13 +144,13 @@ lump_gross   = headline * (1 - lump_disc)
 vf_principal = headline * (1 + vf_prem)
 offer_price  = vf_principal
 
-# Link % ↔ A$ for the alleviator
+# Link percentage ↔ absolute alleviator values
 if tax_as_percent:
     tax_alleviator_amount = offer_price * tax_alleviator_percent / 100
 else:
     tax_alleviator_percent = (tax_alleviator_amount / offer_price * 100) if offer_price > 0 else 0
 
-# Effective principal (offer − alleviator)
+# Effective principal
 effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
 yearly_sched    = build_schedule(structure, effective_principal, rate, years)
 yearly_interest = sum(r.interest for r in yearly_sched)
@@ -267,7 +265,6 @@ st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption(
-    "Headline and Alleviator accept commas (e.g., 4,000,000). "
-    "Alleviator can be input as a percentage of Offer Price or fixed amount; both auto-link. "
-    "Amortizing keeps identical monthly payments; IO+Balloon and Equal-Principal are built on the reduced principal."
+    "You can type commas (e.g., 4,000,000) directly into money inputs. "
+    "Tax Burden Alleviator can be entered as a percentage of Offer Price or absolute A$ value; both auto-link."
 )

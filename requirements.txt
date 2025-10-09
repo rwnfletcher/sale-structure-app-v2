@@ -1,12 +1,9 @@
-# Core dashboard and data libraries
+# Required dependencies for Streamlit Vendor Finance Dashboard
+
 streamlit==1.38.0
 pandas==2.2.2
 numpy==1.26.4
 matplotlib==3.9.2
 xlsxwriter==3.2.0
-
-# PDF export support
 reportlab==4.2.2
-
-# General utilities
 python-dateutil==2.9.0.post0

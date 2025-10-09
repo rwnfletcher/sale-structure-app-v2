@@ -1,8 +1,9 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.5: Offer Price • 0–16wk Lump bar • Vendor-only Monthly • XLSX •
+# v3.6: Offer Price • 0–16wk Lump bar • Vendor-only Monthly • XLSX export •
 #       Chart Toggle (Yearly/Monthly) • Tax Burden Alleviator (First Year extra principal)
-#       >>> NEW: Alleviator treated as principal removed from Day 1 (pricing), paid in nominated month (cash)
-# ------------------------------------------------------------------------------------------------
+#       Alleviator priced as Day-1 principal reduction, cash paid in chosen month
+#       FORMATTED INPUTS (commas) for big numbers
+# --------------------------------------------------------------------------------------------
 
 import io, math
 import pandas as pd
@@ -28,7 +29,7 @@ class CashFlow:
     principal: float
     ending_balance: float
 
-# ---------- Core Yearly Schedules (for high-level cards) ----------
+# ---------- Core Schedules ----------
 def amortizing_schedule(principal: float, rate: float, years: int) -> List[CashFlow]:
     n, r = int(years), rate
     if n <= 0: return []
@@ -69,8 +70,8 @@ def build_schedule(structure: Structure, principal: float, rate: float, years: i
 def draw_timebar(ax, seller_weeks: float, lump_max: float):
     ax.set_title("Handover Timing (weeks)")
     labels, y = ["Seller Finance", "Lump Sum"], [1, 0]
-    ax.barh([y[0]], [seller_weeks], left=[0], color="#1f77b4", height=0.35)
-    ax.barh([y[1]], [lump_max],   left=[0], color="#ff7f0e", height=0.35)
+    ax.barh([y[0]], [seller_weeks], left=[0], color="#1f77b4", height=0.35)  # blue
+    ax.barh([y[1]], [lump_max],   left=[0], color="#ff7f0e", height=0.35)   # orange
     ax.set_yticks(y, labels); ax.set_xlabel("Weeks"); ax.grid(True, axis="x", alpha=0.25)
     ax.text(seller_weeks + .3, y[0], f"{seller_weeks:.0f} wk", va="center")
     ax.text(lump_max + .3,   y[1], f"0–{lump_max:.0f} wks",   va="center")
@@ -85,11 +86,12 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.5", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.6", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
-    headline  = st.number_input("Headline value (A$)", 0.0, value=5_000_000.0, step=100_000.0, format="%.0f")
+    # Comma-formatted big numbers
+    headline  = st.number_input("Headline value (A$)", 0.0, value=5_000_000.0, step=100_000.0, format="%,.0f")
     lump_disc = st.number_input("Lump Sum discount %", 0.0, 95.0, 25.0) / 100
     vf_prem   = st.number_input("Vendor Finance premium %", 0.0, 200.0, 15.0) / 100
     rate      = st.number_input("Interest rate %", 0.0, 100.0, 5.0, 0.5) / 100
@@ -100,9 +102,9 @@ with st.sidebar:
     lump_max        = st.number_input("Lump sum duration (weeks)", 1.0, 52.0, 16.0, 1.0)
     show_monthly    = st.checkbox("Show monthly cost panel", True)
     st.markdown("---")
-    # Alleviator inputs
+    # Alleviator inputs (comma-formatted)
     tax_alleviator_amount = st.number_input("Tax Burden Alleviator (First Year extra principal, A$)",
-                                            min_value=0.0, value=0.0, step=50_000.0, format="%.0f")
+                                            min_value=0.0, value=0.0, step=50_000.0, format="%,.0f")
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
                                                 value=min(6, years*12), step=1))
@@ -112,15 +114,15 @@ lump_gross   = headline * (1 - lump_disc)
 vf_principal = headline * (1 + vf_prem)
 offer_price  = vf_principal
 
-# EFFECTIVE principal for pricing/payments = principal minus alleviator (deferred but treated as removed Day 1)
+# Effective principal for pricing = principal minus alleviator (deferred, but treated as Day-1 reduction)
 effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
 
-# For high-level “interest” card we show schedule on *effective* principal (since priced that way)
+# High-level schedule on effective principal (for cards/charts)
 yearly_sched    = build_schedule(structure, effective_principal, rate, years)
 yearly_interest = sum(r.interest for r in yearly_sched)
 vf_gross_year   = effective_principal + yearly_interest
 
-# Equity roll affects cash display
+# Equity roll affects cash display (optics)
 roll_mult     = 1 - equity_roll_pct/100
 lump_cash     = lump_gross    * roll_mult
 vf_cash_year  = vf_gross_year * roll_mult
@@ -155,14 +157,18 @@ with right:
 if show_monthly:
     st.markdown("### Monthly Cost (Vendor Finance Only)")
     vendor_pmt = vendor_monthly_payment(effective_principal, rate, years, structure)
+    # Display the monthly and the alleviator transparency note
     st.markdown(f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**")
     if tax_alleviator_amount > 0:
-        st.caption(f"Includes Day-1 pricing with principal reduced by {aud(tax_alleviator_amount)}; "
-                   f"Alleviator cash due **Month {tax_alleviator_month}**.")
+        st.caption(
+            f"Priced on effective principal = {aud(effective_principal)} "
+            f"(Offer {aud(offer_price)} − Alleviator {aud(tax_alleviator_amount)}). "
+            f"Alleviator cash **{aud(tax_alleviator_amount)}** due in **Month {tax_alleviator_month}**."
+        )
     else:
         st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}%")
 
-# ---------- Build FULL monthly amortisation (effective principal pricing) ----------
+# ---------- Full monthly amortisation (effective principal pricing) ----------
 st.markdown("---")
 st.markdown("## Vendor Finance Amortisation Schedule")
 
@@ -171,7 +177,7 @@ r_m    = rate / 12
 bal    = effective_principal
 rows   = []
 
-# Constant amortizing payment (on effective principal); other structures use effective principal basis too
+# Constant amortizing payment on effective principal (others also reference effective principal)
 amort_pmt = (effective_principal * r_m / (1 - (1 + r_m) ** (-months))) if (structure=="Amortizing" and r_m) else (
             effective_principal / months if structure=="Amortizing" else None)
 
@@ -181,7 +187,7 @@ for m in range(1, months+1):
         pmt = amort_pmt or 0.0
         interest = bal * r_m
         principal = pmt - interest
-        # NOTE: alleviator is a cash event only; balance is already reduced from Day 1, so DON'T change bal here
+        # Alleviator is a cash event only (balance already reduced from Day 1)
         if m == tax_alleviator_month and tax_alleviator_amount > 0:
             allev = tax_alleviator_amount
         bal = max(0.0, bal - principal)
@@ -206,7 +212,7 @@ for m in range(1, months+1):
             allev = tax_alleviator_amount
         bal = max(0.0, bal - principal)
 
-    total_cash = pmt + allev  # add alleviator as separate cash in that month
+    total_cash = pmt + allev  # include the alleviator cash in the chosen month
     rows.append([m, total_cash, interest, principal, bal, allev])
 
 df = pd.DataFrame(rows, columns=["Month","Payment","Interest","Principal","Balance","Alleviator"])
@@ -229,8 +235,13 @@ else:
     ax4.plot(df["Month"], df["Payment"],  linewidth=2, label="Total Cash")
     ax4.plot(df["Month"], df["Interest"], linewidth=1, label="Interest")
     ax4.plot(df["Month"], df["Principal"],linewidth=1, label="Principal")
+    # mark the alleviator month for visibility
     if tax_alleviator_amount > 0:
-        ax4.scatter([tax_alleviator_month],[df.loc[df["Month"]==tax_alleviator_month,"Payment"].values[0]], s=30)
+        month_mask = df["Month"] == tax_alleviator_month
+        if month_mask.any():
+            ax4.scatter([tax_alleviator_month],
+                        [df.loc[month_mask, "Payment"].values[0]],
+                        s=30)
     ax4.set_xlabel("Month"); ax4.set_ylabel("A$"); ax4.grid(True, alpha=0.25); ax4.legend()
     st.pyplot(fig4)
 
@@ -243,5 +254,8 @@ st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
                    file_name="vendor_finance_amortisation.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("Alleviator is priced as principal removed from Day 1; cash is paid in the nominated month for optics. "
-           "Amortizing keeps identical monthly payments; Interest-Only balloon and Equal-Principal are built on the reduced principal.")
+st.caption(
+    "Alleviator is priced as Day-1 principal reduction and shown as cash in the nominated month. "
+    "Amortizing keeps identical monthly payments; IO+Balloon and Equal-Principal are built on the reduced principal. "
+    "All figures are illustrative only."
+)

@@ -1,6 +1,6 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
 # v4.0 — Full, stable build
-# • Money inputs (Headline & Alleviator) accept commas; auto-format on commit
+# • Money inputs (Headline & Alleviator) accept commas; auto-format on commit (Enter/blur)
 # • Alleviator can be entered as % of Offer or A$ (linked both ways)
 # • Offer Price card, Handover Timing bar (0–N weeks), Monthly Cost with bold Alleviator
 # • Amortisation charts (Yearly/Monthly) + XLSX export
@@ -368,13 +368,13 @@ st.markdown("""
 1. Enter **Headline**, discounts/premiums, rate, term, and structure in the left sidebar.  
 2. For **Tax Burden Alleviator**, either type a dollar amount (e.g., `4,000,000`) **or** toggle **% of Offer**.  
 3. Set the **Month number** when the alleviator is paid (e.g., Month 6).  
-4. Click outside an input or press **Enter** to snap values into **comma format**.  
+4. Press **Enter** or click outside an input to snap values into **comma format**.  
 5. Review:
    - **Offer Price** at the top,  
    - **Monthly Cost** (with bold alleviator if applicable),  
    - **Cash Proceeds** bar and **Handover Timing**,  
    - **Amortisation** (toggle Yearly/Monthly).  
-6. Export the full **amortisation schedule (XLSX)** and **Dashboard Summary (PDF)** from the buttons below the charts.  
+6. Export the **amortisation schedule (XLSX)** and **Dashboard Summary (PDF)** via the buttons below the charts.  
 """)
 
 # ---------- Input Reference ----------
@@ -383,17 +383,16 @@ st.markdown("""
 **Headline value (A$)** — Purchase price before discounts/premiums.  
 **Lump Sum discount (%)** — Price reduction for an upfront cash sale.  
 **Vendor Finance premium (%)** — Price uplift offered when paid over time.  
-**Interest rate (%)** — Annual interest rate applied to financed balance.  
-**Term (years)** — Loan duration.  
+**Interest rate (%), Term (years)** — Loan pricing horizon.  
 **Structure** —  
 • *Amortizing* — fixed total monthly payments.  
 • *Interest-Only + Balloon* — interest-only until final month; principal due at end.  
 • *Equal Principal* — same principal each month; total payment declines.  
-**Equity roll (% of gross)** — Seller retains this share of equity (affects optics, not math in this view).  
-**Seller finance (weeks) / Lump sum (weeks)** — Indicative handover timelines (visual only).  
-**Tax Burden Alleviator (A$ or %)** — Extra principal paid in first year for tax planning.  
-• Treated as **Day-1 principal reduction** for pricing/monthlies.  
-• **Shown as a cash event** in the nominated month.  
-**Month number for Alleviator** — Month in which the alleviator is paid (default 6).  
-**Show monthly cost panel** — Toggle to display monthly repayment summary.  
+**Equity roll (% of gross)** — Seller retains this equity (affects optics).  
+**Handover timings (weeks)** — Visual timeline only.  
+**Tax Burden Alleviator (A$ or %)** — Extra principal in first year;  
+• Treated as **Day-1 principal reduction** for pricing/monthlies,  
+• Shown as **cash** in the nominated month.  
+**Month number for Alleviator** — Month the alleviator is paid (default 6).  
+**Show monthly cost panel** — Toggle monthly repayment summary on/off.
 """)

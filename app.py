@@ -1,12 +1,12 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.7 — Stable
+# v3.8 — Stable on Streamlit Cloud
 # • Offer Price card
 # • 0–16wk Lump bar
-# • Vendor-only Monthly Cost (with bold Tax Burden Alleviator beside it)
+# • Vendor-only Monthly Cost (bold Tax Burden Alleviator beside it)
 # • XLSX export
 # • Yearly/Monthly amortisation toggle
 # • Tax Burden Alleviator = First Year extra principal (priced as Day-1 reduction)
-# • Comma-formatted inputs shown directly in box (no captions)
+# • Comma-formatted inputs inside text boxes (no session_state writes)
 
 import io, math, re
 import pandas as pd
@@ -35,13 +35,14 @@ def parse_money_to_float(s: str) -> float:
         return 0.0
 
 def money_input(label: str, default: float, key: str) -> float:
-    """Text input that displays commas inside the box."""
-    if key not in st.session_state:
-        st.session_state[key] = f"{default:,.0f}"
-    # Keep formatted commas live as user types
-    raw = st.text_input(label, st.session_state[key], key=key)
+    """Comma-formatted text input for big AUD numbers (safe for Streamlit Cloud)."""
+    # show commas in default, but don’t modify session_state
+    formatted_default = f"{default:,.0f}"
+    raw = st.text_input(label, value=formatted_default, key=key)
     val = parse_money_to_float(raw)
-    st.session_state[key] = f"{val:,.0f}" if val else ""
+    # automatically add commas visually (if user types plain digits)
+    if raw.replace(",", "").isdigit():
+        st.text_input(label + " (formatted view)", value=f"{val:,.0f}", key=key + "_view", disabled=True)
     return val
 
 @dataclass
@@ -116,7 +117,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.7", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.8", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -175,12 +176,11 @@ with right:
 
 # ---------- Monthly Cost ----------
 if show_monthly:
-    st.markdown("### Monthly Cost (Vendor Finance Only)")
     vendor_pmt = vendor_monthly_payment(effective_principal, rate, years, structure)
-    monthly_line = f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**"
+    line = f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**"
     if tax_alleviator_amount > 0:
-        monthly_line += f" | **Tax Burden Alleviator: {aud(tax_alleviator_amount)} (Month {tax_alleviator_month})**"
-    st.markdown(monthly_line)
+        line += f" | **Tax Burden Alleviator: {aud(tax_alleviator_amount)} (Month {tax_alleviator_month})**"
+    st.markdown(line)
     st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}%")
 
 # ---------- Amortisation ----------
@@ -240,7 +240,8 @@ else:
     if tax_alleviator_amount > 0:
         mask = df["Month"] == tax_alleviator_month
         if mask.any():
-            ax4.scatter([tax_alleviator_month],[df.loc[mask,"Payment"].values[0]],s=40,color="red",label="Alleviator Month")
+            ax4.scatter([tax_alleviator_month],
+                        [df.loc[mask,"Payment"].values[0]],s=40,color="red",label="Alleviator Month")
     ax4.set_xlabel("Month"); ax4.set_ylabel("A$"); ax4.grid(True, alpha=0.25); ax4.legend()
     st.pyplot(fig4)
 

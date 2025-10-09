@@ -1,12 +1,12 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.8 — Stable on Streamlit Cloud
+# v3.8.1 — Stable on Streamlit Cloud
 # • Offer Price card
 # • 0–16wk Lump bar
-# • Vendor-only Monthly Cost (bold Tax Burden Alleviator beside it)
+# • Vendor-only Monthly Cost (bold Alleviator beside it)
 # • XLSX export
 # • Yearly/Monthly amortisation toggle
-# • Tax Burden Alleviator = First Year extra principal (priced as Day-1 reduction)
-# • Comma-formatted inputs inside text boxes (no session_state writes)
+# • Tax Burden Alleviator (First Year extra principal): priced as Day-1 reduction, paid in nominated month
+# • Single text inputs for big numbers; prefilled with commas (no extra "formatted view" widgets)
 
 import io, math, re
 import pandas as pd
@@ -35,15 +35,10 @@ def parse_money_to_float(s: str) -> float:
         return 0.0
 
 def money_input(label: str, default: float, key: str) -> float:
-    """Comma-formatted text input for big AUD numbers (safe for Streamlit Cloud)."""
-    # show commas in default, but don’t modify session_state
-    formatted_default = f"{default:,.0f}"
-    raw = st.text_input(label, value=formatted_default, key=key)
-    val = parse_money_to_float(raw)
-    # automatically add commas visually (if user types plain digits)
-    if raw.replace(",", "").isdigit():
-        st.text_input(label + " (formatted view)", value=f"{val:,.0f}", key=key + "_view", disabled=True)
-    return val
+    """Single text input prefilled with commas. User can type commas; we parse safely."""
+    default_str = f"{default:,.0f}"
+    raw = st.text_input(label, value=default_str, key=key)
+    return parse_money_to_float(raw)
 
 @dataclass
 class CashFlow:
@@ -53,10 +48,11 @@ class CashFlow:
     principal: float
     ending_balance: float
 
-# ---------- Core Schedules ----------
+# ---------- Schedule Builders ----------
 def amortizing_schedule(principal: float, rate: float, years: int) -> List[CashFlow]:
     n, r = int(years), rate
-    if n <= 0: return []
+    if n <= 0:
+        return []
     pmt = principal * r / (1 - (1 + r) ** (-n)) if r else principal / n
     bal, rows = principal, []
     for t in range(1, n + 1):
@@ -108,7 +104,8 @@ def draw_timebar(ax, seller_weeks: float, lump_max: float):
 
 def vendor_monthly_payment(principal, rate, years, structure):
     r_m, n_m = rate/12, years*12
-    if n_m <= 0: return 0
+    if n_m <= 0:
+        return 0
     if structure == "Amortizing":
         return principal * r_m / (1 - (1 + r_m) ** (-n_m)) if r_m else principal / n_m
     if structure == "Interest-Only + Balloon":
@@ -117,7 +114,7 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.8", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.8.1", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
@@ -132,6 +129,7 @@ with st.sidebar:
     lump_max     = st.number_input("Lump sum duration (weeks)", 1.0, 52.0, 16.0, 1.0)
     show_monthly = st.checkbox("Show monthly cost panel", True)
     st.markdown("---")
+    # IMPORTANT: Alleviator box shows commas by default for easier typing
     tax_alleviator_amount = money_input("Tax Burden Alleviator (First Year extra principal, A$)", 0.0, "allev_amt")
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
@@ -141,10 +139,15 @@ with st.sidebar:
 lump_gross   = headline * (1 - lump_disc)
 vf_principal = headline * (1 + vf_prem)
 offer_price  = vf_principal
+
+# Effective principal for pricing = Day-1 reduction by alleviator
 effective_principal = max(0.0, vf_principal - tax_alleviator_amount)
+
+# High-level schedule on effective principal (cards/charts)
 yearly_sched    = build_schedule(structure, effective_principal, rate, years)
 yearly_interest = sum(r.interest for r in yearly_sched)
 vf_gross_year   = effective_principal + yearly_interest
+
 roll_mult       = 1 - equity_roll_pct/100
 lump_cash       = lump_gross * roll_mult
 vf_cash_year    = vf_gross_year * roll_mult
@@ -241,7 +244,7 @@ else:
         mask = df["Month"] == tax_alleviator_month
         if mask.any():
             ax4.scatter([tax_alleviator_month],
-                        [df.loc[mask,"Payment"].values[0]],s=40,color="red",label="Alleviator Month")
+                        [df.loc[mask,"Payment"].values[0]], s=40, color="red", label="Alleviator Month")
     ax4.set_xlabel("Month"); ax4.set_ylabel("A$"); ax4.grid(True, alpha=0.25); ax4.legend()
     st.pyplot(fig4)
 

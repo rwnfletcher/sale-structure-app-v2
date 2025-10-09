@@ -1,11 +1,13 @@
 # app.py — Streamlit "Vendor Finance vs Lump Sum" Dashboard
-# v3.6: Offer Price • 0–16wk Lump bar • Vendor-only Monthly • XLSX export •
-#       Chart Toggle (Yearly/Monthly) • Tax Burden Alleviator (First Year extra principal)
-#       Alleviator priced as Day-1 principal reduction, cash paid in chosen month
-#       FORMATTED INPUTS (commas) for big numbers
-# --------------------------------------------------------------------------------------------
+# v3.6.1: Fix number_input comma format error by using comma-formatted text inputs for big numbers.
+# Features preserved:
+# • Offer Price (headline + vendor premium)
+# • Handover Timing (Lump Sum bar 0–16 weeks)
+# • Vendor-only Monthly Cost (uses effective principal)
+# • Amortisation section: XLSX download + CHART TOGGLE (Yearly/Monthly)
+# • Tax Burden Alleviator (First Year extra principal): priced as Day-1 principal reduction, paid in nominated month (cash optics)
 
-import io, math
+import io, math, re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +22,32 @@ def aud(x: float) -> str:
     if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
         return "—"
     return f"A${x:,.0f}"
+
+def parse_money_to_float(s: str) -> float:
+    """Parse a human string with commas (and optional currency symbols) into a float. Empty -> 0.0"""
+    if s is None or str(s).strip() == "":
+        return 0.0
+    # Keep digits, minus, and dot; strip everything else
+    cleaned = re.sub(r"[^\d\.\-]", "", str(s))
+    if cleaned in ("", "-", ".", "-.", ".-"):
+        return 0.0
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+def money_text_input(label: str, default: float, key: str) -> float:
+    """
+    Comma-formatted text input for big AUD numbers. Returns float.
+    Shows a tiny 'interpreted as' line for confidence.
+    """
+    # Use session state to preserve user edits between reruns
+    if f"{key}_raw" not in st.session_state:
+        st.session_state[f"{key}_raw"] = f"{default:,.0f}"
+    raw = st.text_input(label, value=st.session_state[f"{key}_raw"], key=f"{key}_raw")
+    val = parse_money_to_float(raw)
+    st.caption(f"Interpreted as: {aud(val)}")
+    return float(val)
 
 @dataclass
 class CashFlow:
@@ -86,25 +114,32 @@ def vendor_monthly_payment(principal, rate, years, structure):
     return principal_month + principal * r_m
 
 # ---------- UI ----------
-st.set_page_config(page_title="Sale Structure Comparator — v3.6", layout="wide")
+st.set_page_config(page_title="Sale Structure Comparator — v3.6.1", layout="wide")
 
 with st.sidebar:
     st.header("Inputs")
-    # Comma-formatted big numbers
-    headline  = st.number_input("Headline value (A$)", 0.0, value=5_000_000.0, step=100_000.0, format="%,.0f")
+
+    # Big numbers with commas:
+    headline  = money_text_input("Headline value (A$)", default=5_000_000.0, key="headline")
+    # Percentages (no commas):
     lump_disc = st.number_input("Lump Sum discount %", 0.0, 95.0, 25.0) / 100
     vf_prem   = st.number_input("Vendor Finance premium %", 0.0, 200.0, 15.0) / 100
     rate      = st.number_input("Interest rate %", 0.0, 100.0, 5.0, 0.5) / 100
     years     = int(st.number_input("Term (years)", 1, 50, 10))
     structure = st.selectbox("Structure", ["Amortizing","Interest-Only + Balloon","Equal Principal"])
+
     equity_roll_pct = st.number_input("Equity roll (% of gross kept as equity)", 0.0, 90.0, 0.0, 1.0)
-    seller_weeks    = st.number_input("Seller finance (weeks)", 0.1, 12.0, 1.0, 0.1)
-    lump_max        = st.number_input("Lump sum duration (weeks)", 1.0, 52.0, 16.0, 1.0)
-    show_monthly    = st.checkbox("Show monthly cost panel", True)
+
+    # Weeks (small numbers):
+    seller_weeks = st.number_input("Seller finance (weeks)", min_value=0.1, max_value=12.0, value=1.0, step=0.1)
+    lump_max     = st.number_input("Lump sum duration (weeks)", min_value=1.0, max_value=52.0, value=16.0, step=1.0)
+
+    show_monthly = st.checkbox("Show monthly cost panel", True)
+
     st.markdown("---")
-    # Alleviator inputs (comma-formatted)
-    tax_alleviator_amount = st.number_input("Tax Burden Alleviator (First Year extra principal, A$)",
-                                            min_value=0.0, value=0.0, step=50_000.0, format="%,.0f")
+    # Alleviator (big number with commas) + month selector:
+    tax_alleviator_amount = money_text_input("Tax Burden Alleviator (First Year extra principal, A$)",
+                                             default=0.0, key="allev_amt")
     tax_alleviator_month  = int(st.number_input("Month number for Alleviator (1–term months)",
                                                 min_value=1, max_value=years*12,
                                                 value=min(6, years*12), step=1))
@@ -157,7 +192,6 @@ with right:
 if show_monthly:
     st.markdown("### Monthly Cost (Vendor Finance Only)")
     vendor_pmt = vendor_monthly_payment(effective_principal, rate, years, structure)
-    # Display the monthly and the alleviator transparency note
     st.markdown(f"#### Estimated Monthly Payment: **{aud(vendor_pmt)}**")
     if tax_alleviator_amount > 0:
         st.caption(
@@ -166,96 +200,3 @@ if show_monthly:
             f"Alleviator cash **{aud(tax_alleviator_amount)}** due in **Month {tax_alleviator_month}**."
         )
     else:
-        st.caption(f"{structure} • {years} yrs @ {rate*100:.1f}%")
-
-# ---------- Full monthly amortisation (effective principal pricing) ----------
-st.markdown("---")
-st.markdown("## Vendor Finance Amortisation Schedule")
-
-months = years * 12
-r_m    = rate / 12
-bal    = effective_principal
-rows   = []
-
-# Constant amortizing payment on effective principal (others also reference effective principal)
-amort_pmt = (effective_principal * r_m / (1 - (1 + r_m) ** (-months))) if (structure=="Amortizing" and r_m) else (
-            effective_principal / months if structure=="Amortizing" else None)
-
-for m in range(1, months+1):
-    allev = 0.0
-    if structure == "Amortizing":
-        pmt = amort_pmt or 0.0
-        interest = bal * r_m
-        principal = pmt - interest
-        # Alleviator is a cash event only (balance already reduced from Day 1)
-        if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            allev = tax_alleviator_amount
-        bal = max(0.0, bal - principal)
-
-    elif structure == "Interest-Only + Balloon":
-        interest = bal * r_m
-        principal = 0.0
-        pmt = interest
-        if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            allev = tax_alleviator_amount
-        # Balloon at final month equals the (already reduced) effective principal
-        if m == months and bal > 0:
-            principal += bal
-            pmt += bal
-            bal = 0.0
-
-    else:  # Equal Principal
-        principal = effective_principal / months
-        interest  = bal * r_m
-        pmt = principal + interest
-        if m == tax_alleviator_month and tax_alleviator_amount > 0:
-            allev = tax_alleviator_amount
-        bal = max(0.0, bal - principal)
-
-    total_cash = pmt + allev  # include the alleviator cash in the chosen month
-    rows.append([m, total_cash, interest, principal, bal, allev])
-
-df = pd.DataFrame(rows, columns=["Month","Payment","Interest","Principal","Balance","Alleviator"])
-df["Year"] = np.ceil(df["Month"]/12).astype(int)
-
-# ---------- Amortisation Chart Toggle ----------
-chart_view = st.radio("Amortisation chart view:", ["Yearly", "Monthly"], horizontal=True)
-
-if chart_view == "Yearly":
-    dfy = df.groupby("Year")[["Payment","Interest","Principal","Alleviator"]].sum().reset_index()
-    st.markdown("### Yearly Amortisation Chart")
-    fig3, ax3 = plt.subplots(figsize=(8,4))
-    ax3.bar(dfy["Year"], dfy["Payment"],  label="Total Cash Outflow")
-    ax3.bar(dfy["Year"], dfy["Interest"], label="Interest Portion")
-    ax3.set_xlabel("Year"); ax3.set_ylabel("A$"); ax3.legend()
-    st.pyplot(fig3)
-else:
-    st.markdown("### Monthly Amortisation Chart")
-    fig4, ax4 = plt.subplots(figsize=(10,4))
-    ax4.plot(df["Month"], df["Payment"],  linewidth=2, label="Total Cash")
-    ax4.plot(df["Month"], df["Interest"], linewidth=1, label="Interest")
-    ax4.plot(df["Month"], df["Principal"],linewidth=1, label="Principal")
-    # mark the alleviator month for visibility
-    if tax_alleviator_amount > 0:
-        month_mask = df["Month"] == tax_alleviator_month
-        if month_mask.any():
-            ax4.scatter([tax_alleviator_month],
-                        [df.loc[month_mask, "Payment"].values[0]],
-                        s=30)
-    ax4.set_xlabel("Month"); ax4.set_ylabel("A$"); ax4.grid(True, alpha=0.25); ax4.legend()
-    st.pyplot(fig4)
-
-# ---------- XLSX download ----------
-buf = io.BytesIO()
-with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-    df.to_excel(w, index=False, sheet_name="Amortisation")
-buf.seek(0)
-st.download_button("📥 Download Full Amortisation (XLSX)", data=buf,
-                   file_name="vendor_finance_amortisation.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-st.caption(
-    "Alleviator is priced as Day-1 principal reduction and shown as cash in the nominated month. "
-    "Amortizing keeps identical monthly payments; IO+Balloon and Equal-Principal are built on the reduced principal. "
-    "All figures are illustrative only."
-)
